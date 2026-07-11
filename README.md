@@ -1,3 +1,52 @@
+# FedorAiToolkit
+
+A fork of [ostris/ai-toolkit](https://github.com/ostris/ai-toolkit) that adds **DRaFT-K reward training for Krea 2**: after a normal SFT stage, the LoRA/LoKr is optimized *directly* on differentiable rewards — face identity and body geometry — computed on images the model generates during training. Everything upstream (all models, the UI, normal training) works unchanged.
+
+## What this fork adds
+
+```
+Stage 1 (SFT, stock ai-toolkit)          Stage 2 (new: krea2_draft_trainer)
+tensorjazz-style dataset                 differentiable sampling
+        |                                (grad through last K flow steps
+        v                                 + checkpointed VAE decode)
+diffusion_trainer                                |
+LoRA or LoKr on Krea 2   -- resumed -->          v
+                                         face reward  +  body reward
+                                         (ArcFace vs   (SAM 3D Body -> MHR
+                                          reference     shape -> SOMA-X
+                                          images)       canonical mesh)
+                                                 |
+                                                 v
+                                         weighted reward loss -> backprop
+```
+
+| Piece | Where | What it does |
+|---|---|---|
+| `krea2_draft_trainer` | `extensions_built_in/krea2_draft_trainer/` | New process type extending `SDTrainer`. Ports the DRaFT-K loop from [KONAKONA666/krea-2](https://github.com/KONAKONA666/krea-2) (Apache-2.0) onto ai-toolkit's Krea 2 pipeline: no-grad for the first `steps - draft_k` denoising steps, gradient through the last K + VAE decode, optional DRaFT-LV samples. Resumes SFT-trained LoRA **and** LoKr networks; `draft.train_modules: qkvo` restricts optimizer updates to attention q/k/v/o adapter tensors. |
+| Face reward | `toolkit/rewards/face.py` | Vendored differentiable `FaceSimilarityReward` (ArcFace/antelopev2, auto-downloads). Saturated centroid reward vs your reference images, EOT augmentations, anti-copy entropy, duplicate-identity penalty. |
+| Body reward | `toolkit/rewards/body.py` | New `BodyGeometryReward`: SAM 3D Body regresses MHR shape params from generated images *with gradients*, SOMA-X maps them to canonical neutral-pose vertices, compared pose-independently against a prototype built from your reference images. Pose is discarded by design — only build/proportions/height are rewarded. Tier-2 fallback compares raw shape params if the Warp vertex path is unavailable. |
+| Combined reward | `toolkit/rewards/combined.py` | `face_weight * face + body_weight * body`, degrades gracefully to face-only when the gated SAM 3D Body checkpoint is missing. |
+| Example configs | `config/examples/kreajazz_lokr_draft.yaml`, `kreajazz_lora_draft.yaml` | Two-stage (SFT then DRaFT) reference configs for LoKr and LoRA. |
+
+### Extra requirements for the body reward
+
+- `pip install py-soma-x warp-lang insightface onnx onnxruntime-gpu` (plus SAM 3D Body's deps)
+- A clone of [facebookresearch/sam-3d-body](https://github.com/facebookresearch/sam-3d-body) at `repositories/sam-3d-body`
+- The gated [facebook/sam-3d-body-vith](https://huggingface.co/facebook/sam-3d-body-vith) checkpoint (request access, set `HF_TOKEN`, or place it at `models/sam-3d-body-vith/`)
+
+### Running a two-stage training
+
+```bash
+# CLI: runs Stage 1 (SFT) then Stage 2 (DRaFT) sequentially
+python run.py config/examples/kreajazz_lokr_draft.yaml
+```
+
+Point `datasets` / `draft.reward.reference_images` at your dataset, set your trigger word, and adjust `draft.reward.face_weight` / `body_weight`. VRAM note: face-only DRaFT at 512px fits easily on a 24 GB card; face+body needs ~32 GB and benefits from closing other GPU apps.
+
+---
+
+Original upstream README follows.
+
 # Ostris AI Toolkit
 
 AI Toolkit is an easy to use all in one training suite for diffusion models. I try to support all the latest models on consumer grade hardware. Image and video models. It can be run as a GUI or CLI. It is designed to be easy to use but still have every feature imaginable. Free and open source.
