@@ -176,7 +176,10 @@ class BodyGeometryReward(nn.Module):
         # detector-free estimator: with no detector, process_one_image uses the
         # full image as the person box, which fits single-subject datasets.
         self.estimator = SAM3DBodyEstimator(self.model, self.cfg)
-        self.input_size = int(self.cfg.MODEL.IMAGE_SIZE)
+        image_size = self.cfg.MODEL.IMAGE_SIZE
+        if isinstance(image_size, (list, tuple)):
+            image_size = image_size[0]
+        self.input_size = int(image_size)
 
         proto_shape, proto_scale = self._build_reference_prototype(
             _reference_paths(reference_images)
@@ -251,6 +254,13 @@ class BodyGeometryReward(nn.Module):
                 self._soma_failed = True
         return self._soma_layer
 
+    def _native_scales(self, scale_params: torch.Tensor) -> torch.Tensor:
+        """Expand SAM 3D Body's 28 scale PCA coefficients to the native
+        68-dim MHR scale vector SOMA-X expects (same op as mhr_forward:
+        ``scale_mean + coeffs @ scale_comps``, differentiable)."""
+        head = self.model.head_pose
+        return head.scale_mean[None, :].to(scale_params) + scale_params @ head.scale_comps.to(scale_params)
+
     def _canonical_vertices(
         self, shape_params: torch.Tensor, scale_params: torch.Tensor
     ) -> Optional[torch.Tensor]:
@@ -258,6 +268,7 @@ class BodyGeometryReward(nn.Module):
         layer = self._get_soma_layer()
         if layer is None:
             return None
+        scale_params = self._native_scales(scale_params)
         b = shape_params.shape[0]
         # 77 user-facing joints (Root excluded), zero axis-angle = neutral pose
         poses = torch.zeros(b, 77, 3, device=self.device, dtype=torch.float32)
@@ -297,7 +308,16 @@ class BodyGeometryReward(nn.Module):
         crop = _center_crop_grid(img01, self.input_size)  # (1, 3, S, S)
 
         side = max(h, w) * 1.25
+        # full-image -> crop affine (what TopdownAffine's warp_mat encodes):
+        # x' = s * (x - (cx - side/2)), s = input_size / side
+        s = self.input_size / side
+        affine = torch.tensor(
+            [[[[s, 0.0, -s * (w / 2.0 - side / 2.0)],
+               [0.0, s, -s * (h / 2.0 - side / 2.0)]]]],
+            dtype=torch.float32,
+        )
         batch = {
+            "affine_trans": affine,  # (1, N=1, 2, 3)
             "img": crop.unsqueeze(0),  # (1, N=1, 3, S, S)
             "img_size": torch.tensor([[[self.input_size, self.input_size]]], dtype=torch.float32),
             "ori_img_size": torch.tensor([[[w, h]]], dtype=torch.float32),
