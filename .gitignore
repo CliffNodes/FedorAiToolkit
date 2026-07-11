@@ -185,3 +185,5 @@ aitk_db.db
 /notes.md
 /data
 .claude
+# vendored external repos (re-clone; see toolkit/rewards/body.py)
+repositories/
