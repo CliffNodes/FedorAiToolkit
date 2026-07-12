@@ -94,8 +94,10 @@ export const getAvaliableJobActions = (job: Job) => {
   const canRemoveFromQueue = job.status === 'queued';
   const canStop = job.status === 'running' && !isStopping;
   let canStart = ['stopped', 'error'].includes(job.status) && !isStopping;
-  // can resume if more steps were added
-  if (job.status === 'completed' && (jobConfig.config.process[0].train?.steps || 0) > job.step && !isStopping) {
+  // can resume if more steps were added (multi-stage jobs: steps are
+  // cumulative, so the last process carries the job's full step count)
+  const maxConfigSteps = Math.max(...jobConfig.config.process.map(p => p.train?.steps || 0), 0);
+  if (job.status === 'completed' && maxConfigSteps > job.step && !isStopping) {
     canStart = true;
   }
   return { canDelete, canEdit, canStop, canStart, canRemoveFromQueue };
@@ -111,5 +113,7 @@ export const getTotalSteps = (job: Job) => {
     return job.total_steps;
   }
   const jobConfig = getJobConfig(job);
-  return jobConfig.config.process[0].train?.steps || 0;
+  // multi-stage jobs use cumulative step counts; the last stage's train.steps
+  // is the job total
+  return Math.max(...jobConfig.config.process.map(p => p.train?.steps || 0), 0);
 };

@@ -228,6 +228,33 @@ export interface SliderConfig {
   anchor_class?: string | null;
 }
 
+export interface DraftRewardConfig {
+  reference_images: string | null;
+  face_weight: number;
+  body_weight: number;
+  face?: { [key: string]: any };
+  body?: { [key: string]: any };
+}
+
+// Krea 2 DRaFT reward stage (krea2_draft_trainer process)
+export interface DraftConfig {
+  steps?: number;
+  draft_k?: number;
+  guidance_scale?: number;
+  width?: number;
+  height?: number;
+  lv_samples?: number;
+  high_noise_shift?: number;
+  seed?: number;
+  checkpoint_vae?: boolean;
+  train_modules?: string;
+  save_images_every?: number;
+  prompts?: string[] | null;
+  prompts_path?: string | null;
+  num_reward_steps?: number;
+  reward?: DraftRewardConfig;
+}
+
 export interface ProcessConfig {
   type: string;
   sqlite_db_path?: string;
@@ -243,6 +270,7 @@ export interface ProcessConfig {
   logging: LoggingConfig;
   model: ModelConfig;
   sample: SampleConfig;
+  draft?: DraftConfig;
 }
 
 export interface ConfigObject {

@@ -833,6 +833,77 @@ export default function SimpleJob({
             </div>
           </Card>
         </div>
+        {modelArch?.name?.startsWith('krea2') && (
+          <div>
+            <Card title="Face / Body Reward Stage (DRaFT)">
+              <Checkbox
+                label="Enable reward stage (runs after regular training finishes)"
+                checked={jobConfig.config.process.length > 1}
+                onChange={value => {
+                  const processes = objectCopy(jobConfig.config.process);
+                  if (value && processes.length < 2) {
+                    const p0 = processes[0];
+                    const draftProcess: any = objectCopy(p0);
+                    draftProcess.type = 'krea2_draft_trainer';
+                    draftProcess.draft = {
+                      num_reward_steps: 60,
+                      reward: {
+                        reference_images: p0.datasets?.[0]?.folder_path ?? null,
+                        face_weight: 1.0,
+                        body_weight: 0.5,
+                      },
+                    };
+                    processes.push(draftProcess);
+                  } else if (!value && processes.length > 1) {
+                    processes.splice(1);
+                  }
+                  setJobConfig(processes, 'config.process');
+                }}
+              />
+              {jobConfig.config.process.length > 1 && (
+                <>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 pt-2">
+                    After the regular training finishes, the LoRA/LoKr keeps training directly on face likeness
+                    (ArcFace) and body-shape likeness (SAM 3D Body) against the reference images. Model, network and
+                    dataset settings are inherited from the main stage automatically.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 pt-2">
+                    <NumberInput
+                      label="Reward Steps"
+                      value={jobConfig.config.process[1].draft?.num_reward_steps ?? 60}
+                      onChange={value => setJobConfig(value, 'config.process[1].draft.num_reward_steps')}
+                      placeholder="eg. 60"
+                      min={1}
+                      required
+                    />
+                    <NumberInput
+                      label="Face Weight"
+                      value={jobConfig.config.process[1].draft?.reward?.face_weight ?? 1.0}
+                      onChange={value => setJobConfig(value, 'config.process[1].draft.reward.face_weight')}
+                      placeholder="eg. 1.0"
+                      min={0}
+                      required
+                    />
+                    <NumberInput
+                      label="Body Weight"
+                      value={jobConfig.config.process[1].draft?.reward?.body_weight ?? 0.5}
+                      onChange={value => setJobConfig(value, 'config.process[1].draft.reward.body_weight')}
+                      placeholder="eg. 0.5"
+                      min={0}
+                      required
+                    />
+                    <SelectInput
+                      label="Reference Images"
+                      value={jobConfig.config.process[1].draft?.reward?.reference_images ?? ''}
+                      onChange={value => setJobConfig(value, 'config.process[1].draft.reward.reference_images')}
+                      options={datasetOptions}
+                    />
+                  </div>
+                </>
+              )}
+            </Card>
+          </div>
+        )}
         <div>
           <Card title="Advanced" collapsible>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">

@@ -347,6 +347,9 @@ class BodyGeometryReward(nn.Module):
         )
         batch["img_ori"] = [NoCollate(img_np)]
 
+        # note: bf16 autocast is NOT used here -- the torchscripted MHR module
+        # inside the model fails under autocast, silently degrading the reward
+        # to face-only. fp32 fits on 32 GB when the GPU is otherwise idle.
         with torch.enable_grad():
             self.model._initialize_batch(batch)
             pose_output = self.model.run_inference(

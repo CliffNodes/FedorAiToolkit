@@ -48,7 +48,11 @@ const startAndWatchJob = (job: Job) => {
 
     // update the config dataset path
     const jobConfig = JSON.parse(job.job_config);
-    jobConfig.config.process[0].sqlite_db_path = path.join(TOOLKIT_ROOT, 'aitk_db.db');
+    // multi-stage jobs (e.g. SFT + DRaFT) have several processes; every one
+    // of them needs the db path so each stage can report status/steps
+    for (const proc of jobConfig.config.process) {
+      proc.sqlite_db_path = path.join(TOOLKIT_ROOT, 'aitk_db.db');
+    }
 
     // write the config file
     fs.writeFileSync(configPath, JSON.stringify(jobConfig, null, 2));

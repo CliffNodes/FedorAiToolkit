@@ -147,4 +147,11 @@ export const handleModelArchChange = (
   for (const key in newDefaults) {
     setJobConfig(newDefaults[key][0], key);
   }
+
+  // the DRaFT reward stage (process[1]) is krea2-only; drop it when
+  // switching to another architecture
+  if (!newArchName.startsWith('krea2') && jobConfig.config.process.length > 1) {
+    const remaining = jobConfig.config.process.filter((p, i) => i === 0 || p.type !== 'krea2_draft_trainer');
+    setJobConfig(objectCopy(remaining), 'config.process');
+  }
 };

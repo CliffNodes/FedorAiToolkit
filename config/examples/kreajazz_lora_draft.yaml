@@ -1,229 +1,209 @@
-﻿# FedorAiToolkit -- Krea 2 LoRA training with a DRaFT face+body reward stage.
-#
-# Stage 1 (diffusion_trainer) is a normal Krea 2 LoRA SFT run (the KreaJazz
-# settings, unchanged). Stage 2 (krea2_draft_trainer) resumes the trained
-# LoRA and optimizes it directly for face likeness (ArcFace) and body-shape
-# likeness (SAM 3D Body -> MHR -> SOMA-X) against your reference images.
-#
-# Stage 2 notes:
-# - training_folder differs from Stage 1 so the DRaFT stage does not resume
-#   Stage 1's step counter; it picks up the LoRA weights through
-#   network.pretrained_lora_path instead.
-# - The body reward needs the gated facebook/sam-3d-body-vith checkpoint
-#   (request access on Hugging Face, then `hf auth login` in this venv).
-#   Without it, training continues face-only and prints a warning.
-# - Optimizer is plain AdamW @ 1e-4 for the reward stage (the source repo's
-#   proven setting); switch back to automagic2 at your own risk.
-job: "extension"
+job: extension
 config:
-  name: "KreaJazzLora"
+  name: KreaJazzLora
   process:
-    # ------------------------------------------------------------------
-    # Stage 1 -- SFT (existing ai-toolkit path, LoRA linear 32)
-    # ------------------------------------------------------------------
-    - type: "diffusion_trainer"
-      training_folder: "F:\\comfyui\\ComfyUI\\FedorAiToolkit\\output"
-      sqlite_db_path: "./aitk_db.db"
-      device: "cuda"
-      trigger_word: "GB"
-      performance_log_every: 10
-      network:
-        type: "lora"
-        linear: 32
-        linear_alpha: 32
-        network_kwargs:
-          ignore_if_contains: []
-      save:
-        dtype: "bf16"
-        save_every: 100
-        max_step_saves_to_keep: 5
-        save_format: "diffusers"
-        push_to_hub: false
-      datasets:
-        - folder_path: "F:\\comfyui\\ComfyUI\\FedorAiToolkit\\datasets\\tensorjazz"
-          mask_path: null
-          mask_min_value: 0.1
-          default_caption: ""
-          caption_ext: "txt"
-          caption_dropout_rate: 0.05
-          cache_latents_to_disk: false
-          is_reg: false
-          network_weight: 1
-          resolution:
-            - 512
-            - 768
-            - 1024
-          controls: []
-          shrink_video_to_frames: true
-          num_frames: 1
-          flip_x: false
-          flip_y: false
-          num_repeats: 1
-      train:
-        batch_size: 1
-        bypass_guidance_embedding: false
-        steps: 200
-        gradient_accumulation: 1
-        train_unet: true
-        train_text_encoder: false
-        gradient_checkpointing: true
-        noise_scheduler: "flowmatch"
-        optimizer: "automagic2"
-        timestep_type: "sigmoid"
-        content_or_style: "balanced"
-        optimizer_params:
-          weight_decay: 0.0001
-        unload_text_encoder: false
-        cache_text_embeddings: false
-        lr: 0.0001
-        ema_config:
-          use_ema: false
-          ema_decay: 0.99
-        skip_first_sample: false
-        force_first_sample: false
-        disable_sampling: false
-        dtype: "bf16"
-        diff_output_preservation: false
-        diff_output_preservation_multiplier: 1
-        diff_output_preservation_class: "person"
-        switch_boundary_every: 1
-        loss_type: "mse"
-      logging:
-        log_every: 1
-        use_ui_logger: true
-      model:
-        name_or_path: "krea/Krea-2-Raw"
-        quantize: true
-        qtype: "qfloat8"
-        quantize_te: true
-        qtype_te: "qfloat8"
-        arch: "krea2"
-        low_vram: false
-        model_kwargs: {}
-        compile: false
-        layer_offloading: false
-        layer_offloading_text_encoder_percent: 1
-        layer_offloading_transformer_percent: 1
-      sample:
-        sampler: "flowmatch"
-        sample_every: 100
-        width: 1024
-        height: 1024
-        samples:
-          - prompt: "GB with red hair, playing chess at the park, bomb going off in the background"
-          - prompt: "GB holding a coffee cup, in a beanie, sitting at a cafe"
-          - prompt: "GB playing the guitar, on stage, singing a song, laser lights, punk rocker"
-        neg: ""
-        seed: 42
-        walk_seed: false
-        guidance_scale: 4
-        sample_steps: 30
-        num_frames: 1
-        fps: 1
-
-    # ------------------------------------------------------------------
-    # Stage 2 -- DRaFT-K reward optimization (face + body)
-    # ------------------------------------------------------------------
-    - type: "krea2_draft_trainer"
-      training_folder: "F:\\comfyui\\ComfyUI\\FedorAiToolkit\\output\\draft"
-      sqlite_db_path: "./aitk_db.db"
-      device: "cuda"
-      trigger_word: "GB"
-      performance_log_every: 10
-      network:
-        type: "lora"
-        linear: 32
-        linear_alpha: 32
-        # resume the Stage 1 LoRA (final save of the run above)
-        pretrained_lora_path: "F:\\comfyui\\ComfyUI\\FedorAiToolkit\\output\\KreaJazzLora\\KreaJazzLora.safetensors"
-        network_kwargs:
-          ignore_if_contains: []
-      save:
-        dtype: "bf16"
-        save_every: 20
-        max_step_saves_to_keep: 5
-        save_format: "diffusers"
-        push_to_hub: false
-      draft:
-        steps: 12               # 12-step sampling at 512, the source recipe
-        draft_k: 1              # grad through the last denoising step only
-        guidance_scale: 4.5
-        width: 512
-        height: 512
-        lv_samples: 0
-        high_noise_shift: 0.5
-        seed: 42
-        checkpoint_vae: true
-        train_modules: "qkvo"   # only attention q/k/v/o adapter tensors train
-        save_images_every: 10
-        # prompts default to the .txt captions in reward.reference_images
-        prompts: null
-        prompts_path: null
-        reward:
-          reference_images: "F:\\comfyui\\ComfyUI\\FedorAiToolkit\\datasets\\tensorjazz"
-          face_weight: 1.0
-          body_weight: 0.5
-          face:
-            target_similarity: 0.45
-          body:
-            loss_tier: "somax"   # tier 1; "shape_params" = tier-2 fallback
-            sam3d_hf_repo: "facebook/sam-3d-body-vith"
-      train:
-        batch_size: 1
-        steps: 60               # ~60 reward updates after SFT
-        gradient_accumulation: 1
-        train_unet: true
-        train_text_encoder: false
-        gradient_checkpointing: true
-        noise_scheduler: "flowmatch"
-        optimizer: "adamw"
-        optimizer_params:
-          weight_decay: 0.0001
-        lr: 0.0001
-        max_grad_norm: 1.0
-        unload_text_encoder: false
-        cache_text_embeddings: false
-        ema_config:
-          use_ema: false
-          ema_decay: 0.99
-        skip_first_sample: true
-        force_first_sample: false
-        disable_sampling: false
-        dtype: "bf16"
-        loss_type: "mse"
-      logging:
-        log_every: 1
-        use_ui_logger: true
-      model:
-        name_or_path: "krea/Krea-2-Raw"
-        quantize: true
-        qtype: "qfloat8"
-        quantize_te: true
-        qtype_te: "qfloat8"
-        arch: "krea2"
-        low_vram: false
-        model_kwargs: {}
-        compile: false
-        layer_offloading: false
-        layer_offloading_text_encoder_percent: 1
-        layer_offloading_transformer_percent: 1
-      sample:
-        sampler: "flowmatch"
-        sample_every: 20
-        width: 1024
-        height: 1024
-        samples:
-          - prompt: "GB with red hair, playing chess at the park, bomb going off in the background"
-          - prompt: "GB holding a coffee cup, in a beanie, sitting at a cafe"
-          - prompt: "GB playing the guitar, on stage, singing a song, laser lights, punk rocker"
-        neg: ""
-        seed: 42
-        walk_seed: false
-        guidance_scale: 4
-        sample_steps: 30
-        num_frames: 1
-        fps: 1
+  - type: diffusion_trainer
+    training_folder: F:\comfyui\ComfyUI\FedorAiToolkit\output
+    sqlite_db_path: ./aitk_db.db
+    device: cuda
+    trigger_word: GB
+    performance_log_every: 10
+    network:
+      type: lora
+      linear: 32
+      linear_alpha: 32
+      network_kwargs:
+        ignore_if_contains: []
+    save:
+      dtype: bf16
+      save_every: 100
+      max_step_saves_to_keep: 5
+      save_format: diffusers
+      push_to_hub: false
+    datasets:
+    - folder_path: F:\comfyui\ComfyUI\FedorAiToolkit\datasets\tensorjazz
+      mask_path: null
+      mask_min_value: 0.1
+      default_caption: ''
+      caption_ext: txt
+      caption_dropout_rate: 0.05
+      cache_latents_to_disk: false
+      is_reg: false
+      network_weight: 1
+      resolution:
+      - 512
+      - 768
+      - 1024
+      controls: []
+      shrink_video_to_frames: true
+      num_frames: 1
+      flip_x: false
+      flip_y: false
+      num_repeats: 1
+    train:
+      batch_size: 1
+      bypass_guidance_embedding: false
+      steps: 200
+      gradient_accumulation: 1
+      train_unet: true
+      train_text_encoder: false
+      gradient_checkpointing: true
+      noise_scheduler: flowmatch
+      optimizer: automagic2
+      timestep_type: sigmoid
+      content_or_style: balanced
+      optimizer_params:
+        weight_decay: 0.0001
+      unload_text_encoder: false
+      cache_text_embeddings: false
+      lr: 0.0001
+      ema_config:
+        use_ema: false
+        ema_decay: 0.99
+      skip_first_sample: false
+      force_first_sample: false
+      disable_sampling: false
+      dtype: bf16
+      diff_output_preservation: false
+      diff_output_preservation_multiplier: 1
+      diff_output_preservation_class: person
+      switch_boundary_every: 1
+      loss_type: mse
+    logging:
+      log_every: 1
+      use_ui_logger: true
+    model:
+      name_or_path: krea/Krea-2-Raw
+      quantize: true
+      qtype: qfloat8
+      quantize_te: true
+      qtype_te: qfloat8
+      arch: krea2
+      low_vram: false
+      model_kwargs: {}
+      compile: false
+      layer_offloading: false
+      layer_offloading_text_encoder_percent: 1
+      layer_offloading_transformer_percent: 1
+    sample:
+      sampler: flowmatch
+      sample_every: 100
+      width: 1024
+      height: 1024
+      samples:
+      - prompt: GB with red hair, playing chess at the park, bomb going off in the
+          background
+      - prompt: GB holding a coffee cup, in a beanie, sitting at a cafe
+      - prompt: GB playing the guitar, on stage, singing a song, laser lights, punk
+          rocker
+      neg: ''
+      seed: 42
+      walk_seed: false
+      guidance_scale: 4
+      sample_steps: 30
+      num_frames: 1
+      fps: 1
+  - type: krea2_draft_trainer
+    training_folder: F:\comfyui\ComfyUI\FedorAiToolkit\output\draft
+    sqlite_db_path: ./aitk_db.db
+    device: cuda
+    trigger_word: GB
+    performance_log_every: 10
+    network:
+      type: lora
+      linear: 32
+      linear_alpha: 32
+      pretrained_lora_path: F:\comfyui\ComfyUI\FedorAiToolkit\output\KreaJazzLora\KreaJazzLora.safetensors
+      network_kwargs:
+        ignore_if_contains: []
+    save:
+      dtype: bf16
+      save_every: 20
+      max_step_saves_to_keep: 5
+      save_format: diffusers
+      push_to_hub: false
+    draft:
+      steps: 12
+      draft_k: 1
+      guidance_scale: 4.5
+      width: 512
+      height: 512
+      lv_samples: 0
+      high_noise_shift: 0.5
+      seed: 42
+      checkpoint_vae: true
+      train_modules: qkvo
+      save_images_every: 10
+      prompts: null
+      prompts_path: null
+      reward:
+        reference_images: F:\comfyui\ComfyUI\FedorAiToolkit\datasets\tensorjazz
+        face_weight: 1.0
+        body_weight: 0.5
+        face:
+          target_similarity: 0.45
+          providers:
+          - CPUExecutionProvider
+        body:
+          loss_tier: somax
+          sam3d_hf_repo: facebook/sam-3d-body-vith
+    train:
+      batch_size: 1
+      steps: 60
+      gradient_accumulation: 1
+      train_unet: true
+      train_text_encoder: false
+      gradient_checkpointing: true
+      noise_scheduler: flowmatch
+      optimizer: adamw
+      optimizer_params:
+        weight_decay: 0.0001
+      lr: 0.0001
+      max_grad_norm: 1.0
+      unload_text_encoder: false
+      cache_text_embeddings: false
+      ema_config:
+        use_ema: false
+        ema_decay: 0.99
+      skip_first_sample: true
+      force_first_sample: false
+      disable_sampling: false
+      dtype: bf16
+      loss_type: mse
+    logging:
+      log_every: 1
+      use_ui_logger: true
+    model:
+      name_or_path: krea/Krea-2-Raw
+      quantize: true
+      qtype: qfloat8
+      quantize_te: true
+      qtype_te: qfloat8
+      arch: krea2
+      low_vram: false
+      model_kwargs: {}
+      compile: false
+      layer_offloading: false
+      layer_offloading_text_encoder_percent: 1
+      layer_offloading_transformer_percent: 1
+    sample:
+      sampler: flowmatch
+      sample_every: 20
+      width: 1024
+      height: 1024
+      samples:
+      - prompt: GB with red hair, playing chess at the park, bomb going off in the
+          background
+      - prompt: GB holding a coffee cup, in a beanie, sitting at a cafe
+      - prompt: GB playing the guitar, on stage, singing a song, laser lights, punk
+          rocker
+      neg: ''
+      seed: 42
+      walk_seed: false
+      guidance_scale: 4
+      sample_steps: 30
+      num_frames: 1
+      fps: 1
 meta:
-  name: "[name]"
-  version: "1.0"
-
+  name: '[name]'
+  version: '1.0'

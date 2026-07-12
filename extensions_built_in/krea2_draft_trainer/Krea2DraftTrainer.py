@@ -50,7 +50,7 @@ from typing import List, Union
 import torch
 from torch.utils.checkpoint import checkpoint
 
-from extensions_built_in.sd_trainer.SDTrainer import SDTrainer
+from extensions_built_in.sd_trainer.DiffusionTrainer import DiffusionTrainer
 from extensions_built_in.diffusion_models.krea2.src.pipeline import (
     pad_text_features,
     predict_velocity,
@@ -80,7 +80,7 @@ def _is_qkvo_module(lora_name: str) -> bool:
     return len(tokens) > 0 and tokens[-1] in QKVO_TAILS
 
 
-class Krea2DraftTrainer(SDTrainer):
+class Krea2DraftTrainer(DiffusionTrainer):
     def __init__(self, process_id: int, job, config: OrderedDict, **kwargs):
         super().__init__(process_id, job, config, **kwargs)
         if (self.model_config.arch or "").lower() != "krea2":
@@ -114,6 +114,13 @@ class Krea2DraftTrainer(SDTrainer):
         self._draft_embeds: List[torch.Tensor] = []
         self._prompt_cursor = 0
 
+        # all prompts are pre-encoded in hook_before_train_loop, so the text
+        # encoder (Qwen3-VL, ~8 GB quantized) never needs to be resident
+        # during the reward loop. The base train loop applies this preset
+        # right before stepping, which would otherwise move the TE back to
+        # the GPU and push the reward models into shared-memory spill.
+        self.train_device_state_preset["text_encoder"]["device"] = "cpu"
+
     def run(self):
         self._release_sibling_processes()
         super().run()
@@ -133,18 +140,28 @@ class Krea2DraftTrainer(SDTrainer):
             if proc is self:
                 continue
             for attr in ("sd", "network", "optimizer", "lr_scheduler", "ema",
-                         "data_loader", "data_loader_reg"):
+                         "data_loader", "data_loader_reg", "adapter",
+                         "embedding", "modules_being_trained", "params"):
                 if getattr(proc, attr, None) is not None:
                     setattr(proc, attr, None)
                     released = True
         if released:
+            # the global Accelerator keeps its own references to every model
+            # passed through accelerator.prepare() (stage 1's unet/vae/network
+            # live in accelerator._models); free_memory() drops them all and
+            # empties the CUDA cache. Nothing of ours is prepared yet.
+            try:
+                self.accelerator.free_memory()
+            except Exception as e:
+                print_acc(f"draft: accelerator.free_memory() failed: {e}")
             # gc first so dropped models actually free their CUDA blocks,
             # then release the now-empty cache back to the driver
             flush(garbage_collect=True)
             flush(garbage_collect=False)
+            allocated = torch.cuda.memory_allocated() / 1e9
             print_acc(
                 "draft: released prior process model(s) before loading the "
-                "DRaFT base"
+                f"DRaFT base ({allocated:.2f} GB still allocated)"
             )
 
     # ------------------------------------------------------------------
@@ -400,16 +417,33 @@ class Krea2DraftTrainer(SDTrainer):
         return -rewards.mean(), rewards.detach()
 
     def _save_step_images(self, images: torch.Tensor, prompts: List[str]):
+        import time as _time
+
         from torchvision.transforms import functional as TF
 
         sample_dir = os.path.join(self.save_root, "draft_step_images")
         os.makedirs(sample_dir, exist_ok=True)
+        # mirror into the job's samples folder using ai-toolkit's
+        # {ms}__{step:09d}_{idx} naming so the UI sample view picks them up
+        ui_sample_dir = None
+        if getattr(self, "is_ui_trainer", False):
+            ui_sample_dir = os.path.join(self.save_root, "samples")
+            os.makedirs(ui_sample_dir, exist_ok=True)
+        ms_now = int(_time.time() * 1000)
         images_cpu = ((images.detach().float().clamp(-1, 1).cpu() + 1.0) * 0.5).clamp(0, 1)
         for idx, image in enumerate(images_cpu):
+            pil = TF.to_pil_image(image)
             stem = f"step_{self.step_num:06d}_{idx:02d}"
-            TF.to_pil_image(image).save(os.path.join(sample_dir, f"{stem}.jpg"))
+            pil.save(os.path.join(sample_dir, f"{stem}.jpg"))
             with open(os.path.join(sample_dir, f"{stem}.txt"), "w", encoding="utf-8") as f:
                 f.write((prompts[idx] if idx < len(prompts) else "") + "\n")
+            if ui_sample_dir is not None:
+                pil.save(
+                    os.path.join(
+                        ui_sample_dir,
+                        f"{ms_now}__{str(self.step_num).zfill(9)}_{idx}.jpg",
+                    )
+                )
 
     # ------------------------------------------------------------------
     # Train loop

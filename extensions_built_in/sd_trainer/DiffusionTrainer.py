@@ -17,6 +17,20 @@ AITK_Status = Literal["running", "stopped", "error", "completed"]
 class DiffusionTrainer(SDTrainer):
     def __init__(self, process_id: int, job, config: OrderedDict, **kwargs):
         super(DiffusionTrainer, self).__init__(process_id, job, config, **kwargs)
+        # multi-stage jobs (e.g. SFT + DRaFT) run several processes
+        # sequentially; only the last one may mark the job completed. steps
+        # are cumulative across stages (stage N resumes from stage N-1's
+        # checkpoint), so the job's total step count is the max over stages.
+        raw_processes = job.config.get("process", []) if hasattr(job, "config") else []
+        self.ui_is_last_process = process_id >= len(raw_processes) - 1
+        self.ui_stage_label = f"{process_id + 1}/{len(raw_processes)}"
+        total = 0
+        for proc_conf in raw_processes:
+            try:
+                total = max(total, int(proc_conf.get("train", {}).get("steps", 0)))
+            except Exception:
+                pass
+        self.ui_total_steps = total or None
         self.sqlite_db_path = self.config.get("sqlite_db_path", "./aitk_db.db")
         self.job_id = os.environ.get("AITK_JOB_ID", None)
         self.job_id = self.job_id.strip() if self.job_id is not None else None
@@ -308,7 +322,14 @@ class DiffusionTrainer(SDTrainer):
     def done_hook(self):
         super(DiffusionTrainer, self).done_hook()
         if self.is_ui_trainer:
-            self.update_status("completed", "Training completed")
+            if self.ui_is_last_process:
+                self.update_status("completed", "Training completed")
+            else:
+                # a later stage of this job is about to start; keep the job
+                # running so the queue doesn't launch another job on this GPU
+                self.update_status(
+                    "running", f"Stage {self.ui_stage_label} complete"
+                )
             # Wait for all async operations to finish before shutting down
             asyncio.run(self.wait_for_all_async())
             self.thread_pool.shutdown(wait=True)
@@ -336,6 +357,8 @@ class DiffusionTrainer(SDTrainer):
         super().hook_before_train_loop()
         if self.is_ui_trainer:
             self.maybe_stop()
+            if self.ui_total_steps is not None:
+                self.update_db_key("total_steps", self.ui_total_steps)
             self.update_step()
             self.update_status("running", "Training")
             self.timer.add_after_print_hook(self.handle_timing_print_hook)
